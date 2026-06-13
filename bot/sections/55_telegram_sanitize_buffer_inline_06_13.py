@@ -317,8 +317,8 @@ async def cb_pba(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: F
     if len(parts) < 3 or parts[0] != "pba":
         return
     action = parts[1]
-    # Only intercept the "post" action — delegate the rest to previous impl
-    if action != "post":
+    # Intercept post + csv; delegate the rest to previous impl
+    if action not in ("post", "csv"):
         await _prev_cb_pba_55(update, context)
         raise ApplicationHandlerStop
 
@@ -336,6 +336,36 @@ async def cb_pba(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: F
             await q.answer("Not for you", show_alert=False)
         raise ApplicationHandlerStop
     chat_id = int(entry.get("chat_id") or q.message.chat_id)
+
+    if action == "csv":
+        with contextlib.suppress(Exception):
+            await q.answer("Exporting CSV…")
+        try:
+            items = buffer_list(uid, limit=99999) or []
+            if not items:
+                with contextlib.suppress(Exception):
+                    await q.edit_message_text(ui_box_html("Buffer Empty", "Nothing to export.", emoji="📂"), parse_mode=ParseMode.HTML)
+                raise ApplicationHandlerStop
+            rows = _csv_ready_rows(items, uid)
+            df = pd.DataFrame(rows)
+            cols = ["questions", "option1", "option2", "option3", "option4", "option5", "answer", "correct_answer", "answer_text", "explanation", "type", "section"]
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = ""
+            with tempfile.NamedTemporaryFile("w+b", suffix=".csv", delete=False) as f:
+                path = f.name
+            df[cols].to_csv(path, index=False, encoding="utf-8-sig")
+            with open(path, "rb") as rf:
+                await context.bot.send_document(chat_id=chat_id, document=rf, filename=f"probaho_checked_buffer_{int(time.time())}.csv", caption=f"📂 Checked CSV — {len(rows)} questions")
+            with contextlib.suppress(Exception):
+                os.remove(path)
+        except ApplicationHandlerStop:
+            raise
+        except Exception as e:
+            db_log("ERROR", "pba_csv_failed_v55", {"user_id": uid, "error": str(e)})
+            with contextlib.suppress(Exception):
+                await q.answer("CSV failed", show_alert=True)
+        raise ApplicationHandlerStop
 
     if len(parts) < 4:
         with contextlib.suppress(Exception):
