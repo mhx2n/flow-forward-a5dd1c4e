@@ -309,6 +309,18 @@ async def _send_content_page_offer(context, chat_id: int, uid: int, page_idx: in
     # Fast path: do not wait for AI count-estimation after OCR. The first count is
     # the checked OCR MCQ count; 🔁 More Generate creates new unique questions.
     try:
+        dedupe_key = hashlib.md5((str(uid) + "|" + str(page_idx) + "|" + (text or "")[:600]).encode("utf-8", "ignore")).hexdigest()
+        store = _offer_dedupe_store() if "_offer_dedupe_store" in globals() else {}
+        now = time.time()
+        for k in list(store.keys()):
+            if now - store[k] > 600:
+                store.pop(k, None)
+        if dedupe_key in store:
+            return
+        store[dedupe_key] = now
+    except Exception:
+        pass
+    try:
         detected = len(_manual_extract_mcq_items(text or ""))
     except Exception:
         detected = 0
