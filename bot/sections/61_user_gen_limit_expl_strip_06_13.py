@@ -239,12 +239,7 @@ async def cb_g59(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: F
         with contextlib.suppress(Exception):
             entry["picker_msg_id"] = q.message.message_id
         raise ApplicationHandlerStop
-    if action == "cnt":
-        limit = int(entry.get("limit") or 500)
-        count = max(1, min(int(val), limit))
-        # Re-write val so the inherited handler honours the clamp
-        new_data = f"g59:cnt:{count}:{tok}"
-        # Reuse previous handler logic for cancel + cnt
+    # All other actions (cnt / x) defer to the previous handler.
     if _prev_cb_g59_61 is None:
         raise ApplicationHandlerStop
     await _prev_cb_g59_61(update, context)
