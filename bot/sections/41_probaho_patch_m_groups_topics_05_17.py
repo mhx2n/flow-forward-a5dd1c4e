@@ -528,7 +528,7 @@ async def _cmd_topic_m(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Forward the replied-to content as the topic header
             if reply_msg.photo:
                 caption = topic_text if topic_text else (reply_msg.caption or None)
-                kw: Dict[str, Any] = dict(chat_id=target_chat_id, photo=reply_msg.photo[-1].file_id, caption=caption)
+                kw: Dict[str, Any] = dict(chat_id=target_chat_id, photo=reply_msg.photo[-1].file_id, caption=caption, has_spoiler=True)
                 if send_thread_id is not None:
                     kw['message_thread_id'] = send_thread_id
                 sent = await context.bot.send_photo(**kw)
@@ -542,7 +542,7 @@ async def _cmd_topic_m(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             elif reply_msg.video:
                 caption = topic_text if topic_text else (reply_msg.caption or None)
-                kw = dict(chat_id=target_chat_id, video=reply_msg.video.file_id, caption=caption)
+                kw = dict(chat_id=target_chat_id, video=reply_msg.video.file_id, caption=caption, has_spoiler=True)
                 if send_thread_id is not None:
                     kw['message_thread_id'] = send_thread_id
                 sent = await context.bot.send_video(**kw)
