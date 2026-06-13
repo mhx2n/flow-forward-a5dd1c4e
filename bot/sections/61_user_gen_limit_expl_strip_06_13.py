@@ -61,30 +61,22 @@ def buffer_add(user_id, payload):  # noqa: F811
 # ─── 2. Per-user .gen generation limit ──────────────────────────────────────
 
 DEFAULT_USER_GEN_LIMIT_61 = 10
+_GEN_LIMIT_GLOBAL_KEY_61 = "user_gen_limit_global"
 
-def _gen_limit_key_61(uid: int) -> str:
-    return f"user_gen_limit_{int(uid)}"
-
-def get_user_gen_limit_61(uid: int) -> int:
+def get_user_gen_limit_61(uid: int = 0) -> int:
     try:
-        raw = get_setting(_gen_limit_key_61(uid), "").strip()
-        if raw:
-            return max(1, min(int(raw), 500))
-    except Exception:
-        pass
-    try:
-        raw = get_setting("user_gen_limit_default", "").strip()
+        raw = get_setting(_GEN_LIMIT_GLOBAL_KEY_61, "").strip()
         if raw:
             return max(1, min(int(raw), 500))
     except Exception:
         pass
     return DEFAULT_USER_GEN_LIMIT_61
 
-def set_user_gen_limit_61(uid: int, value: int) -> None:
-    set_setting(_gen_limit_key_61(uid), str(max(1, min(int(value), 500))))
+def set_user_gen_limit_global_61(value: int) -> None:
+    set_setting(_GEN_LIMIT_GLOBAL_KEY_61, str(max(1, min(int(value), 500))))
 
-def clear_user_gen_limit_61(uid: int) -> None:
-    set_setting(_gen_limit_key_61(uid), "")
+def clear_user_gen_limit_global_61() -> None:
+    set_setting(_GEN_LIMIT_GLOBAL_KEY_61, "")
 
 
 def _doubling_ladder_61(limit: int) -> List[int]:
@@ -316,20 +308,20 @@ async def cmd_setgenlimit_61(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.effective_message.reply_text("Owner only.")
         return
     args = list(context.args or [])
-    if len(args) < 2:
+    if not args:
         with contextlib.suppress(Exception):
-            await update.effective_message.reply_text("Usage: .setgenlimit <user_id> <N>\nExample: .setgenlimit 12345678 50")
+            await update.effective_message.reply_text("Usage: .setgenlimit <N>\nExample: .setgenlimit 50")
         return
     try:
-        target = int(args[0]); n = int(args[1])
+        n = int(args[0])
     except Exception:
         with contextlib.suppress(Exception):
-            await update.effective_message.reply_text("Invalid user_id or N.")
+            await update.effective_message.reply_text("Invalid N.")
         return
-    set_user_gen_limit_61(target, n)
+    set_user_gen_limit_global_61(n)
     with contextlib.suppress(Exception):
         await update.effective_message.reply_text(
-            f"✅ user <code>{target}</code> এর .gen লিমিট: <code>{max(1, min(n,500))}</code>",
+            f"✅ Global .gen limit (সব ইউজার): <code>{max(1, min(n,500))}</code>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -337,19 +329,10 @@ async def cmd_getgenlimit_61(update: Update, context: ContextTypes.DEFAULT_TYPE)
     uid = update.effective_user.id if update.effective_user else 0
     if not _is_owner_id(uid):
         return
-    args = list(context.args or [])
-    if not args:
-        with contextlib.suppress(Exception):
-            await update.effective_message.reply_text("Usage: .getgenlimit <user_id>")
-        return
-    try:
-        target = int(args[0])
-    except Exception:
-        return
-    cur = get_user_gen_limit_61(target)
+    cur = get_user_gen_limit_61()
     with contextlib.suppress(Exception):
         await update.effective_message.reply_text(
-            f"user_id: <code>{target}</code>\n.gen limit: <code>{cur}</code>",
+            f"Global .gen limit: <code>{cur}</code>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -357,19 +340,10 @@ async def cmd_resetgenlimit_61(update: Update, context: ContextTypes.DEFAULT_TYP
     uid = update.effective_user.id if update.effective_user else 0
     if not _is_owner_id(uid):
         return
-    args = list(context.args or [])
-    if not args:
-        with contextlib.suppress(Exception):
-            await update.effective_message.reply_text("Usage: .resetgenlimit <user_id>")
-        return
-    try:
-        target = int(args[0])
-    except Exception:
-        return
-    clear_user_gen_limit_61(target)
+    clear_user_gen_limit_global_61()
     with contextlib.suppress(Exception):
         await update.effective_message.reply_text(
-            f"✅ <code>{target}</code> reset → default <code>{get_user_gen_limit_61(target)}</code>",
+            f"✅ Global .gen limit reset → default <code>{get_user_gen_limit_61()}</code>",
             parse_mode=ParseMode.HTML,
         )
 
