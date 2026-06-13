@@ -302,6 +302,36 @@ def _csv_ready_rows(items: List[Tuple[int, Dict[str, Any]]], uid: int = 0) -> Li
     return rows
 
 
+_prev_send_content_page_offer_55 = _send_content_page_offer
+
+
+async def _send_content_page_offer(context, chat_id: int, uid: int, page_idx: int, text: str):  # noqa: F811
+    # Fast path: do not wait for AI count-estimation after OCR. The first count is
+    # the checked OCR MCQ count; 🔁 More Generate creates new unique questions.
+    try:
+        detected = len(_manual_extract_mcq_items(text or ""))
+    except Exception:
+        detected = 0
+    token = uuid.uuid4().hex[:10]
+    counts = {"easy": 0, "medium": 0, "hard": 0, "ocr_checked": int(detected or 0)}
+    _genq_store(context)[token] = {
+        "uid": uid, "chat_id": chat_id, "page": page_idx, "text": text,
+        "counts": counts, "seen_fp": set(), "more_added": 0, "ts": time.time(),
+    }
+    body = (
+        f"📄 Page <code>{page_idx}</code>\n"
+        f"OCR checked MCQ: <code>{int(detected or 0)}</code>\n\n"
+        "Use 🔁 More Generate to create additional NEW unique MCQs from this OCR text."
+    )
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=ui_box_html(f"Generate from Page {page_idx}?", body, emoji="🧠"),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_genq_kb(token, counts),
+        disable_web_page_preview=True,
+    )
+
+
 # =========================================================================
 # 2) Replacement cb_pba — sanitizes polls; does NOT auto-clear buffer
 # =========================================================================
