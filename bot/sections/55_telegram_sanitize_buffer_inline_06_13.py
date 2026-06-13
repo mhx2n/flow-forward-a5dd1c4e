@@ -121,6 +121,154 @@ def _sanitize_item_for_poll(it: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # =========================================================================
+# 1.5) OCR text → deterministic MCQ parser fallback
+#      Fixes pages where OCR text is visible but AI extraction misses / shuffles
+#      numbered MCQs (32,33,34...) with (a)(b)(c)(d), সমাধান:, [Ans: x].
+# =========================================================================
+
+_BN_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
+_OPT_LETTER_TO_ANS = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "ক": 1, "খ": 2, "গ": 3, "ঘ": 4, "ঙ": 5}
+
+
+def _mcq_norm_for_match(text: str) -> str:
+    try:
+        s = _tg_plain_text(str(text or "")).translate(_BN_DIGITS).lower()
+    except Exception:
+        s = str(text or "").translate(_BN_DIGITS).lower()
+    s = (s.replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&")
+           .replace("₍", "(").replace("₎", ")").replace("⁽", "(").replace("⁾", ")"))
+    s = re.sub(r"[\s\u200b]+", " ", s)
+    s = re.sub(r"[^0-9a-zঅ-ঔক-হড়ঢ়য়α-ω()+\-*/=<>^]+", "", s)
+    return s.strip()
+
+
+def _manual_mcq_blocks_from_text(text: str) -> List[Tuple[str, str]]:
+    raw = str(text or "").replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&")
+    raw = raw.replace("\r", "\n")
+    start_re = re.compile(r"(?m)^\s*([0-9০-৯]{1,3})\s*[.)।:-]\s+")
+    starts = list(start_re.finditer(raw))
+    blocks: List[Tuple[str, str]] = []
+    for i, m in enumerate(starts):
+        st = m.start()
+        en = starts[i + 1].start() if i + 1 < len(starts) else len(raw)
+        block = raw[st:en].strip()
+        if re.search(r"(?i)(?:^|\n)\s*\(?[a-eকখগঘঙ]\)?\s*[.)।:-]", block):
+            blocks.append((m.group(1).translate(_BN_DIGITS), block))
+    return blocks
+
+
+def _manual_parse_single_mcq(block_no: str, block: str) -> Optional[Dict[str, Any]]:
+    b = re.sub(r"[ \t]+", " ", str(block or "")).strip()
+    b = re.sub(r"^\s*[0-9০-৯]{1,3}\s*[.)।:-]\s*", "", b).strip()
+    if not b:
+        return None
+    # Answer/explanation can be inline after সমাধান/উত্তর/Ans. Keep it, but remove from option parsing.
+    ans = 0
+    expl = ""
+    ans_m = re.search(r"(?is)(?:সমাধান|উত্তর|সঠিক\s*উত্তর|answer|ans)\s*[:：]?\s*\(?\s*([a-eকখগঘঙ])\s*\)?\s*[;।:,-]?\s*(.*)$", b)
+    if ans_m:
+        ans = _OPT_LETTER_TO_ANS.get(ans_m.group(1).lower(), 0)
+        expl = (ans_m.group(2) or "").strip()
+        b = b[:ans_m.start()].strip()
+    # Right-side answer boxes like [Ans: d] may be OCR'd at the end.
+    side_m = re.search(r"(?is)\[\s*ans\s*[:：]\s*([a-eকখগঘঙ])\s*\]\s*$", b)
+    if side_m:
+        ans = ans or _OPT_LETTER_TO_ANS.get(side_m.group(1).lower(), 0)
+        b = b[:side_m.start()].strip()
+    opt_re = re.compile(r"(?is)(?:^|\n|\s{2,})\(?\s*([a-eকখগঘঙ])\s*\)?\s*[.)।:-]\s*")
+    matches = list(opt_re.finditer(b))
+    if len(matches) < 2:
+        return None
+    q = b[:matches[0].start()].strip(" \n:-—–")
+    opts: List[str] = []
+    letters: List[str] = []
+    for i, m in enumerate(matches[:5]):
+        nxt = matches[i + 1].start() if i + 1 < len(matches) else len(b)
+        txt = b[m.end():nxt].strip(" \n;।")
+        txt = re.sub(r"\s+", " ", txt).strip()
+        if txt:
+            letters.append(m.group(1).lower())
+            opts.append(txt)
+    if not q or len(opts) < 2:
+        return None
+    if ans and ans > len(opts):
+        ans = 0
+    return {
+        "questions": q,
+        "option1": opts[0] if len(opts) > 0 else "",
+        "option2": opts[1] if len(opts) > 1 else "",
+        "option3": opts[2] if len(opts) > 2 else "",
+        "option4": opts[3] if len(opts) > 3 else "",
+        "option5": opts[4] if len(opts) > 4 else "",
+        "answer": ans,
+        "explanation": _hard_trim_expl(expl) if "_hard_trim_expl" in globals() else expl[:180],
+        "type": 1,
+        "section": 1,
+        "source_no": str(block_no or ""),
+        "source": "ocr_checked",
+    }
+
+
+def _manual_extract_mcq_items(text: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for no, block in _manual_mcq_blocks_from_text(text):
+        try:
+            it = _manual_parse_single_mcq(no, block)
+            if it:
+                out.append(it)
+        except Exception:
+            continue
+    return out
+
+
+def _q_no_from_item(it: Dict[str, Any]) -> str:
+    no = str((it or {}).get("source_no") or "").strip().translate(_BN_DIGITS)
+    if no:
+        return no
+    q = str((it or {}).get("questions") or "")
+    m = re.match(r"\s*([0-9০-৯]{1,3})\s*[.)।:-]", q)
+    return m.group(1).translate(_BN_DIGITS) if m else ""
+
+
+def _merge_manual_ai_items(manual_items: List[Dict[str, Any]], ai_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = [dict(x or {}) for x in (manual_items or [])]
+    used_ai = set()
+    for mi in out:
+        mno = _q_no_from_item(mi)
+        mkey = _mcq_norm_for_match(mi.get("questions") or "")
+        best_idx, best_score = -1, 0.0
+        for idx, ai in enumerate(ai_items or []):
+            if idx in used_ai:
+                continue
+            ano = _q_no_from_item(ai)
+            akey = _mcq_norm_for_match(ai.get("questions") or "")
+            score = 1.0 if (mno and ano and mno == ano) else SequenceMatcher(None, mkey, akey).ratio()
+            if score > best_score:
+                best_idx, best_score = idx, score
+        if best_idx >= 0 and best_score >= 0.62:
+            ai = dict(ai_items[best_idx] or {})
+            used_ai.add(best_idx)
+            if not int(mi.get("answer", 0) or 0) and int(ai.get("answer", 0) or 0):
+                mi["answer"] = int(ai.get("answer", 0) or 0)
+            if not str(mi.get("explanation") or "").strip() and str(ai.get("explanation") or "").strip():
+                mi["explanation"] = _hard_trim_expl(ai.get("explanation") or "") if "_hard_trim_expl" in globals() else str(ai.get("explanation") or "")[:180]
+    for idx, ai in enumerate(ai_items or []):
+        if idx in used_ai:
+            continue
+        akey = _mcq_norm_for_match((ai or {}).get("questions") or "")
+        if not akey:
+            continue
+        if any(SequenceMatcher(None, akey, _mcq_norm_for_match((x or {}).get("questions") or "")).ratio() >= 0.82 for x in out):
+            continue
+        out.append(dict(ai or {}))
+    try:
+        out = _dedupe_mcq_items(out)
+    except Exception:
+        pass
+    return out
+
+
+# =========================================================================
 # 2) Replacement cb_pba — sanitizes polls; does NOT auto-clear buffer
 # =========================================================================
 
