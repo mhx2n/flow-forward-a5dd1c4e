@@ -786,6 +786,63 @@ async def cb_g59(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raise ApplicationHandlerStop
 
 
+async def msg_g59_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.effective_user:
+        return
+    txt = str(update.message.text or "").strip()
+    if not re.fullmatch(r"\d{1,4}", txt):
+        return
+    uid = int(update.effective_user.id)
+    state = _g59_store(context)
+    tok = None
+    newest = -1.0
+    for k, v in list(state.items()):
+        if int(v.get("uid") or 0) == uid and float(v.get("ts") or 0) > newest:
+            tok, newest = k, float(v.get("ts") or 0)
+    if not tok:
+        return
+    entry = state.get(tok) or {}
+    count = max(1, min(500, int(txt)))
+    mode = str(entry.get("mode") or "std")
+    ocr_ctx = dict(entry.get("ocr_ctx") or {})
+    chat_id = int(entry.get("chat_id") or update.message.chat_id)
+    status = None
+    with contextlib.suppress(Exception):
+        status = await update.message.reply_text(ui_box_html("Generating", f"Mode: <b>{h(mode.upper())}</b>\nCount: <code>{count}</code>", emoji="⏳"), parse_mode=ParseMode.HTML)
+    added, dup = await _generate_to_buffer_59(update, context, ocr_ctx, uid, count, mode)
+    state.pop(tok, None)
+    with contextlib.suppress(Exception):
+        if status:
+            await status.edit_text(ui_box_html("Generated → Buffer", f"Added: <code>{added}</code>\nDuplicates skipped: <code>{dup}</code>\nBuffered total: <code>{buffer_count(uid)}</code>", emoji="✅"), parse_mode=ParseMode.HTML)
+    if added > 0:
+        await _send_pb_action_card(context, chat_id, uid, added)
+    raise ApplicationHandlerStop
+
+
+if "build_app" in globals():
+    _prev_build_app_59 = build_app
+
+    def build_app() -> Application:  # noqa: F811
+        app = _prev_build_app_59()
+        with contextlib.suppress(Exception):
+            if "_register_dual_command" in globals():
+                _register_dual_command(app, "gen", cmd_gen, group=-500)
+            else:
+                app.add_handler(CommandHandler("gen", cmd_gen), group=-500)
+                app.add_handler(_build_dot_command_handler("gen", cmd_gen), group=-500)
+        with contextlib.suppress(Exception):
+            app.add_handler(CallbackQueryHandler(cb_genq_59, pattern=r"^genq:(go|re|no|ge|gm|gh|mo|src):[0-9a-f]+$"), group=-500)
+        with contextlib.suppress(Exception):
+            app.add_handler(CallbackQueryHandler(cb_src59, pattern=r"^src59:"), group=-500)
+        with contextlib.suppress(Exception):
+            app.add_handler(CallbackQueryHandler(cb_g59, pattern=r"^g59:"), group=-500)
+        with contextlib.suppress(Exception):
+            app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, msg_g59_count), group=-500)
+        return app
+
+# ===== END FINAL SINGLE FLOW SECTION 59 =====
+
+
 
 
 
