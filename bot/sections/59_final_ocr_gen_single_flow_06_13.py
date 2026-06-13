@@ -326,7 +326,7 @@ async def _post_items_59(context, uid: int, chat_id: int, ch, items: List[Dict[s
                 kw.update(reply_kw)
             await context.bot.send_poll(**kw)
             posted += 1
-            await asyncio.sleep(0.35)
+            await asyncio.sleep(2.0)
         except RetryAfter as ra:
             await asyncio.sleep(float(getattr(ra, "retry_after", 2)) + 1.0)
         except Exception as e:
