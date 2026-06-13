@@ -9,18 +9,13 @@ from __future__ import annotations
 
 import os
 
-# ─── Required ────────────────────────────────────────────────────────────────
-# Telegram bot token from @BotFather. Prefer the env var on production hosts
-# (Render / Pella / Fly / etc.) so the value is not committed to git.
-BOT_TOKEN: str = os.getenv(
-    "BOT_TOKEN",
-    "8373412574:AAHr9YtdIxVfxfNz6LTdYrfJepO47S2OmB4",
-).strip()
+# ─── Required (Render Environment Variables) ─────────────────────────────────
+# Telegram bot token from @BotFather. MUST be set in Render → Environment.
+BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip()
 
-# Numeric Telegram user id of the bot owner. Accepts a single int or a
-# comma-separated string of multiple owner ids (the original normaliser in
-# section 01 handles both shapes).
-OWNER_ID: int | str = os.getenv("OWNER_ID", "8535385246").strip() or 8535385246
+# Numeric Telegram user id of the bot owner. Accepts single id or
+# comma-separated multiple ids. MUST be set in Render → Environment.
+OWNER_ID: int | str = os.getenv("OWNER_ID", "").strip()
 try:
     OWNER_ID = int(OWNER_ID)  # keep as int when possible
 except (TypeError, ValueError):
