@@ -121,6 +121,230 @@ def _sanitize_item_for_poll(it: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # =========================================================================
+# 1.5) OCR text → deterministic MCQ parser fallback
+#      Fixes pages where OCR text is visible but AI extraction misses / shuffles
+#      numbered MCQs (32,33,34...) with (a)(b)(c)(d), সমাধান:, [Ans: x].
+# =========================================================================
+
+_BN_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
+_OPT_LETTER_TO_ANS = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "ক": 1, "খ": 2, "গ": 3, "ঘ": 4, "ঙ": 5}
+
+
+def _mcq_norm_for_match(text: str) -> str:
+    try:
+        s = _tg_plain_text(str(text or "")).translate(_BN_DIGITS).lower()
+    except Exception:
+        s = str(text or "").translate(_BN_DIGITS).lower()
+    s = (s.replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&")
+           .replace("₍", "(").replace("₎", ")").replace("⁽", "(").replace("⁾", ")"))
+    s = re.sub(r"[\s\u200b]+", " ", s)
+    s = re.sub(r"[^0-9a-zঅ-ঔক-হড়ঢ়য়α-ω()+\-*/=<>^]+", "", s)
+    return s.strip()
+
+
+def _manual_mcq_blocks_from_text(text: str) -> List[Tuple[str, str]]:
+    raw = str(text or "").replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&")
+    raw = raw.replace("\r", "\n")
+    start_re = re.compile(r"(?m)^\s*([0-9০-৯]{1,3})\s*[.)।:-]\s+")
+    starts = list(start_re.finditer(raw))
+    blocks: List[Tuple[str, str]] = []
+    for i, m in enumerate(starts):
+        st = m.start()
+        en = starts[i + 1].start() if i + 1 < len(starts) else len(raw)
+        block = raw[st:en].strip()
+        if re.search(r"(?i)(?:^|\n)\s*\(?[a-eকখগঘঙ]\)?\s*[.)।:-]", block):
+            blocks.append((m.group(1).translate(_BN_DIGITS), block))
+    return blocks
+
+
+def _manual_parse_single_mcq(block_no: str, block: str) -> Optional[Dict[str, Any]]:
+    b = re.sub(r"[ \t]+", " ", str(block or "")).strip()
+    b = re.sub(r"^\s*[0-9০-৯]{1,3}\s*[.)।:-]\s*", "", b).strip()
+    if not b:
+        return None
+    # Answer/explanation can be inline after সমাধান/উত্তর/Ans. Keep it, but remove from option parsing.
+    ans = 0
+    expl = ""
+    ans_m = re.search(r"(?is)(?:সমাধান|উত্তর|সঠিক\s*উত্তর|answer|ans)\s*[:：]?\s*\(?\s*([a-eকখগঘঙ])\s*\)?\s*[;।:,-]?\s*(.*)$", b)
+    if ans_m:
+        ans = _OPT_LETTER_TO_ANS.get(ans_m.group(1).lower(), 0)
+        expl = (ans_m.group(2) or "").strip()
+        b = b[:ans_m.start()].strip()
+    # Right-side answer boxes like [Ans: d] may be OCR'd at the end.
+    side_m = re.search(r"(?is)\[\s*ans\s*[:：]\s*([a-eকখগঘঙ])\s*\]\s*$", b)
+    if side_m:
+        ans = ans or _OPT_LETTER_TO_ANS.get(side_m.group(1).lower(), 0)
+        b = b[:side_m.start()].strip()
+    opt_re = re.compile(r"(?is)(?:^|\n|\s{2,})\(?\s*([a-eকখগঘঙ])\s*\)?\s*[.)।:-]\s*")
+    matches = list(opt_re.finditer(b))
+    if len(matches) < 2:
+        return None
+    q = b[:matches[0].start()].strip(" \n:-—–")
+    opts: List[str] = []
+    letters: List[str] = []
+    for i, m in enumerate(matches[:5]):
+        nxt = matches[i + 1].start() if i + 1 < len(matches) else len(b)
+        txt = b[m.end():nxt].strip(" \n;।")
+        txt = re.sub(r"\s+", " ", txt).strip()
+        if txt:
+            letters.append(m.group(1).lower())
+            opts.append(txt)
+    if not q or len(opts) < 2:
+        return None
+    if ans and ans > len(opts):
+        ans = 0
+    return {
+        "questions": q,
+        "option1": opts[0] if len(opts) > 0 else "",
+        "option2": opts[1] if len(opts) > 1 else "",
+        "option3": opts[2] if len(opts) > 2 else "",
+        "option4": opts[3] if len(opts) > 3 else "",
+        "option5": opts[4] if len(opts) > 4 else "",
+        "answer": ans,
+        "explanation": _hard_trim_expl(expl) if "_hard_trim_expl" in globals() else expl[:180],
+        "type": 1,
+        "section": 1,
+        "source_no": str(block_no or ""),
+        "source": "ocr_checked",
+    }
+
+
+def _manual_extract_mcq_items(text: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for no, block in _manual_mcq_blocks_from_text(text):
+        try:
+            it = _manual_parse_single_mcq(no, block)
+            if it:
+                out.append(it)
+        except Exception:
+            continue
+    return out
+
+
+def _q_no_from_item(it: Dict[str, Any]) -> str:
+    no = str((it or {}).get("source_no") or "").strip().translate(_BN_DIGITS)
+    if no:
+        return no
+    q = str((it or {}).get("questions") or "")
+    m = re.match(r"\s*([0-9০-৯]{1,3})\s*[.)।:-]", q)
+    return m.group(1).translate(_BN_DIGITS) if m else ""
+
+
+def _merge_manual_ai_items(manual_items: List[Dict[str, Any]], ai_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = [dict(x or {}) for x in (manual_items or [])]
+    used_ai = set()
+    for mi in out:
+        mno = _q_no_from_item(mi)
+        mkey = _mcq_norm_for_match(mi.get("questions") or "")
+        best_idx, best_score = -1, 0.0
+        for idx, ai in enumerate(ai_items or []):
+            if idx in used_ai:
+                continue
+            ano = _q_no_from_item(ai)
+            akey = _mcq_norm_for_match(ai.get("questions") or "")
+            score = 1.0 if (mno and ano and mno == ano) else SequenceMatcher(None, mkey, akey).ratio()
+            if score > best_score:
+                best_idx, best_score = idx, score
+        if best_idx >= 0 and best_score >= 0.62:
+            ai = dict(ai_items[best_idx] or {})
+            used_ai.add(best_idx)
+            if not int(mi.get("answer", 0) or 0) and int(ai.get("answer", 0) or 0):
+                mi["answer"] = int(ai.get("answer", 0) or 0)
+            if not str(mi.get("explanation") or "").strip() and str(ai.get("explanation") or "").strip():
+                mi["explanation"] = _hard_trim_expl(ai.get("explanation") or "") if "_hard_trim_expl" in globals() else str(ai.get("explanation") or "")[:180]
+    for idx, ai in enumerate(ai_items or []):
+        if idx in used_ai:
+            continue
+        akey = _mcq_norm_for_match((ai or {}).get("questions") or "")
+        if not akey:
+            continue
+        if any(SequenceMatcher(None, akey, _mcq_norm_for_match((x or {}).get("questions") or "")).ratio() >= 0.82 for x in out):
+            continue
+        out.append(dict(ai or {}))
+    try:
+        out = _dedupe_mcq_items(out)
+    except Exception:
+        pass
+    return out
+
+
+def _csv_ready_rows(items: List[Tuple[int, Dict[str, Any]]], uid: int = 0) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    explanations_enabled = True
+    with contextlib.suppress(Exception):
+        explanations_enabled = explain_mode_on(uid) if uid else True
+    for _, raw in items or []:
+        it = dict(raw or {})
+        q = str(it.get("questions") or "").strip()
+        e = str(it.get("explanation") or "").strip()
+        with contextlib.suppress(Exception):
+            q2, expl2 = split_inline_explain(q)
+            q = q2.strip() or q
+            if expl2 and not e:
+                e = expl2.strip()
+        opts = [str(it.get(f"option{i}") or "").strip() for i in range(1, 6)]
+        ans = int(it.get("answer", 0) or 0)
+        answer_text = opts[ans - 1] if 1 <= ans <= len(opts) else ""
+        rows.append({
+            "questions": q,
+            "option1": opts[0] if len(opts) > 0 else "",
+            "option2": opts[1] if len(opts) > 1 else "",
+            "option3": opts[2] if len(opts) > 2 else "",
+            "option4": opts[3] if len(opts) > 3 else "",
+            "option5": opts[4] if len(opts) > 4 else "",
+            "answer": ans,
+            "correct_answer": {1: "A", 2: "B", 3: "C", 4: "D", 5: "E"}.get(ans, ""),
+            "answer_text": answer_text,
+            "explanation": _hard_trim_expl(e) if explanations_enabled else "",
+            "type": it.get("type", 1),
+            "section": it.get("section", 1),
+        })
+    return rows
+
+
+_prev_send_content_page_offer_55 = _send_content_page_offer
+
+
+async def _send_content_page_offer(context, chat_id: int, uid: int, page_idx: int, text: str):  # noqa: F811
+    # Fast path: do not wait for AI count-estimation after OCR. The first count is
+    # the checked OCR MCQ count; 🔁 More Generate creates new unique questions.
+    try:
+        dedupe_key = hashlib.md5((str(uid) + "|" + str(page_idx) + "|" + (text or "")[:600]).encode("utf-8", "ignore")).hexdigest()
+        store = _offer_dedupe_store() if "_offer_dedupe_store" in globals() else {}
+        now = time.time()
+        for k in list(store.keys()):
+            if now - store[k] > 600:
+                store.pop(k, None)
+        if dedupe_key in store:
+            return
+        store[dedupe_key] = now
+    except Exception:
+        pass
+    try:
+        detected = len(_manual_extract_mcq_items(text or ""))
+    except Exception:
+        detected = 0
+    token = uuid.uuid4().hex[:10]
+    counts = {"easy": 0, "medium": 0, "hard": 0, "ocr_checked": int(detected or 0)}
+    _genq_store(context)[token] = {
+        "uid": uid, "chat_id": chat_id, "page": page_idx, "text": text,
+        "counts": counts, "seen_fp": set(), "more_added": 0, "ts": time.time(),
+    }
+    body = (
+        f"📄 Page <code>{page_idx}</code>\n"
+        f"OCR checked MCQ: <code>{int(detected or 0)}</code>\n\n"
+        "Use 🔁 More Generate to create additional NEW unique MCQs from this OCR text."
+    )
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=ui_box_html(f"Generate from Page {page_idx}?", body, emoji="🧠"),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_genq_kb(token, counts),
+        disable_web_page_preview=True,
+    )
+
+
+# =========================================================================
 # 2) Replacement cb_pba — sanitizes polls; does NOT auto-clear buffer
 # =========================================================================
 
@@ -135,8 +359,8 @@ async def cb_pba(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: F
     if len(parts) < 3 or parts[0] != "pba":
         return
     action = parts[1]
-    # Only intercept the "post" action — delegate the rest to previous impl
-    if action != "post":
+    # Intercept post + csv; delegate the rest to previous impl
+    if action not in ("post", "csv"):
         await _prev_cb_pba_55(update, context)
         raise ApplicationHandlerStop
 
@@ -154,6 +378,36 @@ async def cb_pba(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: F
             await q.answer("Not for you", show_alert=False)
         raise ApplicationHandlerStop
     chat_id = int(entry.get("chat_id") or q.message.chat_id)
+
+    if action == "csv":
+        with contextlib.suppress(Exception):
+            await q.answer("Exporting CSV…")
+        try:
+            items = buffer_list(uid, limit=99999) or []
+            if not items:
+                with contextlib.suppress(Exception):
+                    await q.edit_message_text(ui_box_html("Buffer Empty", "Nothing to export.", emoji="📂"), parse_mode=ParseMode.HTML)
+                raise ApplicationHandlerStop
+            rows = _csv_ready_rows(items, uid)
+            df = pd.DataFrame(rows)
+            cols = ["questions", "option1", "option2", "option3", "option4", "option5", "answer", "correct_answer", "answer_text", "explanation", "type", "section"]
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = ""
+            with tempfile.NamedTemporaryFile("w+b", suffix=".csv", delete=False) as f:
+                path = f.name
+            df[cols].to_csv(path, index=False, encoding="utf-8-sig")
+            with open(path, "rb") as rf:
+                await context.bot.send_document(chat_id=chat_id, document=rf, filename=f"probaho_checked_buffer_{int(time.time())}.csv", caption=f"📂 Checked CSV — {len(rows)} questions")
+            with contextlib.suppress(Exception):
+                os.remove(path)
+        except ApplicationHandlerStop:
+            raise
+        except Exception as e:
+            db_log("ERROR", "pba_csv_failed_v55", {"user_id": uid, "error": str(e)})
+            with contextlib.suppress(Exception):
+                await q.answer("CSV failed", show_alert=True)
+        raise ApplicationHandlerStop
 
     if len(parts) < 4:
         with contextlib.suppress(Exception):
@@ -386,7 +640,60 @@ def _extract_mcq_items_master(chunk_text: str) -> List[Dict[str, Any]]:  # noqa:
         augmented = (_SIDE_BOX_HINT + "\n" + (chunk_text or "")).strip()
     except Exception:
         augmented = chunk_text or ""
-    return _prev_extract_mcq_items_master_55(augmented)
+    ai_items = _prev_extract_mcq_items_master_55(augmented) or []
+    try:
+        manual_items = _manual_extract_mcq_items(chunk_text or "")
+        if manual_items:
+            return _merge_manual_ai_items(manual_items, ai_items)
+    except Exception as e:
+        db_log("WARN", "manual_mcq_merge_failed_v55", {"error": str(e)})
+    return ai_items
+
+
+# =========================================================================
+# 4.5) OCR completion → action card immediately, with OCR-checked count.
+#      This makes buttons appear right after detected MCQs are buffered.
+# =========================================================================
+
+_prev_run_staff_ocr_pipeline_55 = _run_staff_ocr_pipeline
+
+
+async def _run_staff_ocr_pipeline(update: Update, context: ContextTypes.DEFAULT_TYPE, source_msg, local_path: str, *, source_label: str = "image") -> Dict[str, Any]:  # noqa: F811
+    uid = int(update.effective_user.id if update and update.effective_user else 0)
+    chat_id = int(getattr(source_msg, "chat_id", 0) or 0)
+    before = 0
+    with contextlib.suppress(Exception):
+        before = int(buffer_count(uid))
+    ctx_payload = await _prev_run_staff_ocr_pipeline_55(update, context, source_msg, local_path, source_label=source_label)
+    try:
+        after = int(buffer_count(uid))
+        added = max(0, after - before)
+        if uid > 0 and chat_id and added > 0:
+            await _send_pb_action_card(context, chat_id, uid, added)
+            text = str((ctx_payload or {}).get("clean_text") or (ctx_payload or {}).get("raw_markdown") or "")
+            if text.strip():
+                token = uuid.uuid4().hex[:10]
+                counts = {"easy": 0, "medium": 0, "hard": 0, "ocr_checked": added}
+                _genq_store(context)[token] = {
+                    "uid": uid, "chat_id": chat_id, "page": 1, "text": text,
+                    "counts": counts, "seen_fp": set(_fp_question(it) for _, it in (buffer_list(uid, limit=99999) or [])),
+                    "more_added": 0, "ts": time.time(),
+                }
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=ui_box_html(
+                        "OCR Checked Quiz Ready",
+                        f"Detected and buffered: <code>{added}</code> MCQ(s).\n"
+                        "Use 🔁 More Generate to add new unique questions from the same OCR text.",
+                        emoji="🧠",
+                    ),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_genq_kb(token, counts),
+                    disable_web_page_preview=True,
+                )
+    except Exception as e:
+        db_log("WARN", "ocr_action_card_v55_failed", {"error": str(e)})
+    return ctx_payload
 
 
 # =========================================================================
