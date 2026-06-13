@@ -268,6 +268,40 @@ def _merge_manual_ai_items(manual_items: List[Dict[str, Any]], ai_items: List[Di
     return out
 
 
+def _csv_ready_rows(items: List[Tuple[int, Dict[str, Any]]], uid: int = 0) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    explanations_enabled = True
+    with contextlib.suppress(Exception):
+        explanations_enabled = explain_mode_on(uid) if uid else True
+    for _, raw in items or []:
+        it = dict(raw or {})
+        q = str(it.get("questions") or "").strip()
+        e = str(it.get("explanation") or "").strip()
+        with contextlib.suppress(Exception):
+            q2, expl2 = split_inline_explain(q)
+            q = q2.strip() or q
+            if expl2 and not e:
+                e = expl2.strip()
+        opts = [str(it.get(f"option{i}") or "").strip() for i in range(1, 6)]
+        ans = int(it.get("answer", 0) or 0)
+        answer_text = opts[ans - 1] if 1 <= ans <= len(opts) else ""
+        rows.append({
+            "questions": q,
+            "option1": opts[0] if len(opts) > 0 else "",
+            "option2": opts[1] if len(opts) > 1 else "",
+            "option3": opts[2] if len(opts) > 2 else "",
+            "option4": opts[3] if len(opts) > 3 else "",
+            "option5": opts[4] if len(opts) > 4 else "",
+            "answer": ans,
+            "correct_answer": {1: "A", 2: "B", 3: "C", 4: "D", 5: "E"}.get(ans, ""),
+            "answer_text": answer_text,
+            "explanation": _hard_trim_expl(e) if explanations_enabled else "",
+            "type": it.get("type", 1),
+            "section": it.get("section", 1),
+        })
+    return rows
+
+
 # =========================================================================
 # 2) Replacement cb_pba — sanitizes polls; does NOT auto-clear buffer
 # =========================================================================
