@@ -1,0 +1,33 @@
+# Render Blueprint — Free Web Service
+# Deploy: New + → Blueprint → point at this repo. Render reads render.yaml.
+services:
+  - type: web
+    name: probaho-bot
+    runtime: python
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      # ─── Required ──────────────────────────────────────────────────
+      - key: BOT_TOKEN
+        sync: false               # set in Render dashboard (or keep code fallback)
+      - key: OWNER_ID
+        sync: false               # set in Render dashboard (or keep code fallback)
+
+      # ─── Optional — AI providers (set whichever you use) ───────────
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+
+      # ─── MongoDB persistent backup (PATCH-R) ───────────────────────
+      - key: MONGO_URI
+        sync: false               # mongodb+srv://user:pass@cluster.../db
+      - key: MONGO_DB_NAME
+        value: probaho_bot
