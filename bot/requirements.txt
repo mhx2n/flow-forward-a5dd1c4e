@@ -1,0 +1,7 @@
+# প্রবাহ bot — Python runtime dependencies
+python-telegram-bot>=21.0
+requests>=2.31
+beautifulsoup4>=4.12
+pandas>=2.0
+# Optional — only needed if you enable the MongoDB persistent backup (PATCH-R)
+pymongo[srv]>=4.6
