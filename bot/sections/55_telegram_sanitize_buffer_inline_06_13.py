@@ -534,7 +534,60 @@ def _extract_mcq_items_master(chunk_text: str) -> List[Dict[str, Any]]:  # noqa:
         augmented = (_SIDE_BOX_HINT + "\n" + (chunk_text or "")).strip()
     except Exception:
         augmented = chunk_text or ""
-    return _prev_extract_mcq_items_master_55(augmented)
+    ai_items = _prev_extract_mcq_items_master_55(augmented) or []
+    try:
+        manual_items = _manual_extract_mcq_items(chunk_text or "")
+        if manual_items:
+            return _merge_manual_ai_items(manual_items, ai_items)
+    except Exception as e:
+        db_log("WARN", "manual_mcq_merge_failed_v55", {"error": str(e)})
+    return ai_items
+
+
+# =========================================================================
+# 4.5) OCR completion → action card immediately, with OCR-checked count.
+#      This makes buttons appear right after detected MCQs are buffered.
+# =========================================================================
+
+_prev_run_staff_ocr_pipeline_55 = _run_staff_ocr_pipeline
+
+
+async def _run_staff_ocr_pipeline(update: Update, context: ContextTypes.DEFAULT_TYPE, source_msg, local_path: str, *, source_label: str = "image") -> Dict[str, Any]:  # noqa: F811
+    uid = int(update.effective_user.id if update and update.effective_user else 0)
+    chat_id = int(getattr(source_msg, "chat_id", 0) or 0)
+    before = 0
+    with contextlib.suppress(Exception):
+        before = int(buffer_count(uid))
+    ctx_payload = await _prev_run_staff_ocr_pipeline_55(update, context, source_msg, local_path, source_label=source_label)
+    try:
+        after = int(buffer_count(uid))
+        added = max(0, after - before)
+        if uid > 0 and chat_id and added > 0:
+            await _send_pb_action_card(context, chat_id, uid, added)
+            text = str((ctx_payload or {}).get("clean_text") or (ctx_payload or {}).get("raw_markdown") or "")
+            if text.strip():
+                token = uuid.uuid4().hex[:10]
+                counts = {"easy": 0, "medium": 0, "hard": 0, "ocr_checked": added}
+                _genq_store(context)[token] = {
+                    "uid": uid, "chat_id": chat_id, "page": 1, "text": text,
+                    "counts": counts, "seen_fp": set(_fp_question(it) for _, it in (buffer_list(uid, limit=99999) or [])),
+                    "more_added": 0, "ts": time.time(),
+                }
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=ui_box_html(
+                        "OCR Checked Quiz Ready",
+                        f"Detected and buffered: <code>{added}</code> MCQ(s).\n"
+                        "Use 🔁 More Generate to add new unique questions from the same OCR text.",
+                        emoji="🧠",
+                    ),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_genq_kb(token, counts),
+                    disable_web_page_preview=True,
+                )
+    except Exception as e:
+        db_log("WARN", "ocr_action_card_v55_failed", {"error": str(e)})
+    return ctx_payload
 
 
 # =========================================================================
