@@ -207,3 +207,131 @@ def _genq_kb_59(token: str, counts: Dict[str, int]) -> InlineKeyboardMarkup:
 
 
 globals()["_genq_kb"] = _genq_kb_59
+
+
+def _src_action_kb_59(token: str, channels: List[Any]) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    quick: List[InlineKeyboardButton] = []
+    for ch in (channels or [])[:6]:
+        title = (getattr(ch, "title", None) or str(getattr(ch, "channel_chat_id", "?")))[:18]
+        quick.append(InlineKeyboardButton(f"📤 {title}", callback_data=f"src59:post:{ch.id}:{token}"))
+    while quick:
+        rows.append(quick[:2])
+        quick = quick[2:]
+    if len(channels or []) > 6:
+        rows.append([InlineKeyboardButton("🎯 More channels…", callback_data=f"src59:list:{token}")])
+    rows.append([InlineKeyboardButton("📂 Source CSV", callback_data=f"src59:csv:{token}")])
+    rows.append([InlineKeyboardButton("✖ Close", callback_data=f"src59:close:{token}")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _show_source_actions_59(q, context, token: str, entry: Dict[str, Any]):
+    uid = int(entry.get("uid") or 0)
+    items = list(entry.get("source_items") or [])
+    try:
+        channels = channel_list_for_user(uid) or []
+    except Exception:
+        channels = []
+    _src_store_59(context)[token] = {
+        "uid": uid,
+        "chat_id": int(entry.get("chat_id") or q.message.chat_id),
+        "items": items,
+        "ts": time.time(),
+    }
+    body = (
+        f"Image/PDF থেকে পাওয়া checked MCQ: <code>{len(items)}</code>\n"
+        "এগুলো original source প্রশ্ন — new generated নয়."
+    )
+    if not channels:
+        body += "\n\n<i>Tip: /addchannel দিয়ে channel add করলে এখান থেকেই post করা যাবে.</i>"
+    with contextlib.suppress(Exception):
+        await q.edit_message_text(
+            ui_box_html("Source MCQ Actions", body, emoji="📌"),
+            parse_mode=ParseMode.HTML,
+            reply_markup=_src_action_kb_59(token, channels),
+            disable_web_page_preview=True,
+        )
+
+
+async def _export_items_csv_59(context, chat_id: int, uid: int, rows_items: List[Dict[str, Any]], prefix: str):
+    rows = _csv_ready_rows([(i, it) for i, it in enumerate(rows_items)], uid) if "_csv_ready_rows" in globals() else []
+    if not rows:
+        rows = []
+        for it in rows_items:
+            opts = _opts_59(it)
+            ans = int(it.get("answer", 0) or 0)
+            rows.append({
+                "questions": it.get("questions", ""),
+                "option1": opts[0] if len(opts) > 0 else "",
+                "option2": opts[1] if len(opts) > 1 else "",
+                "option3": opts[2] if len(opts) > 2 else "",
+                "option4": opts[3] if len(opts) > 3 else "",
+                "option5": opts[4] if len(opts) > 4 else "",
+                "answer": ans,
+                "correct_answer": {1: "A", 2: "B", 3: "C", 4: "D", 5: "E"}.get(ans, ""),
+                "answer_text": opts[ans - 1] if 1 <= ans <= len(opts) else "",
+                "explanation": it.get("explanation", ""),
+                "type": it.get("type", 1),
+                "section": it.get("section", 1),
+            })
+    with tempfile.NamedTemporaryFile("w+b", suffix=".csv", delete=False) as f:
+        path = f.name
+    try:
+        pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8-sig")
+        with open(path, "rb") as rf:
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=rf,
+                filename=f"{prefix}_{int(time.time())}.csv",
+                caption=f"📂 CSV — {len(rows)} questions",
+            )
+    finally:
+        with contextlib.suppress(Exception):
+            os.remove(path)
+
+
+async def _post_items_59(context, uid: int, chat_id: int, ch, items: List[Dict[str, Any]]) -> Tuple[int, int]:
+    target_chat_id = ch.channel_chat_id
+    reply_kw: Dict[str, Any] = {}
+    with contextlib.suppress(Exception):
+        anchor_chat, anchor_msg = _get_topic_anchor(uid)
+        if anchor_msg:
+            reply_kw = _make_reply_params(anchor_msg) if anchor_chat == target_chat_id else _make_reply_params(anchor_msg, chat_id=anchor_chat)
+    posted = failed = 0
+    for raw in items:
+        try:
+            it = _sanitize_item_for_poll(raw) if "_sanitize_item_for_poll" in globals() else dict(raw or {})
+            opts = _opts_59(it)[:10]
+            ans = int(it.get("answer", 0) or 0)
+            if len(opts) < 2 or not (1 <= ans <= len(opts)):
+                failed += 1
+                continue
+            qtext = str(it.get("questions") or "").strip()
+            if "_v57_apply_prefix" in globals():
+                qtext = _v57_apply_prefix(ch, qtext)
+            else:
+                pfx = (getattr(ch, "prefix", "") or "").strip()
+                if pfx and not qtext.startswith(pfx):
+                    qtext = f"{pfx}\n{qtext}"
+            expl = ""
+            if explain_mode_on(uid):
+                expl = _trim_expl_for_poll(str(it.get("explanation") or ""))
+                if "_v57_apply_expl" in globals():
+                    expl = _v57_apply_expl(ch, expl)
+            kw = dict(chat_id=target_chat_id, question=qtext[:300], options=opts, type=Poll.QUIZ,
+                      correct_option_id=ans - 1, is_anonymous=True,
+                      explanation=expl if expl else None,
+                      explanation_parse_mode=ParseMode.HTML if expl else None)
+            if reply_kw:
+                kw.update(reply_kw)
+            await context.bot.send_poll(**kw)
+            posted += 1
+            await asyncio.sleep(0.35)
+        except RetryAfter as ra:
+            await asyncio.sleep(float(getattr(ra, "retry_after", 2)) + 1.0)
+        except Exception as e:
+            failed += 1
+            with contextlib.suppress(Exception):
+                db_log("WARN", "post_items_59_failed", {"user_id": uid, "error": str(e)})
+    return posted, failed
+
