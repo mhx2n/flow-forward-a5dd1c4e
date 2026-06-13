@@ -252,7 +252,7 @@ async def cb_pba(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     kw.update(_reply_kw)
                 await context.bot.send_poll(**kw)
                 posted += 1
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(2.0)
             except RetryAfter as ra:
                 await asyncio.sleep(float(getattr(ra, "retry_after", 2)) + 1.0)
             except Exception as e:
