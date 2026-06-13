@@ -335,3 +335,93 @@ async def _post_items_59(context, uid: int, chat_id: int, ch, items: List[Dict[s
                 db_log("WARN", "post_items_59_failed", {"user_id": uid, "error": str(e)})
     return posted, failed
 
+
+async def _resolve_ocr_ctx_59(update, context, reply_msg, uid: int) -> Optional[Dict[str, Any]]:
+    ocr_ctx = None
+    with contextlib.suppress(Exception):
+        if _has_ocr_context(context, reply_msg):
+            ocr_ctx = _get_ocr_context(context, reply_msg.message_id)
+    if ocr_ctx:
+        return ocr_ctx
+    is_media = bool(getattr(reply_msg, "photo", None) or getattr(reply_msg, "document", None))
+    if not is_media:
+        return None
+    if not mistral_runtime_enabled() or not get_mistral_api_key():
+        return None
+    local_path = None
+    try:
+        if getattr(reply_msg, "document", None):
+            name = str(reply_msg.document.file_name or "")
+            suffix = os.path.splitext(name)[1].strip() or ".jpg"
+            if len(suffix) > 8:
+                suffix = ".jpg"
+            tg_file = await reply_msg.document.get_file()
+        else:
+            suffix = ".jpg"
+            tg_file = await reply_msg.photo[-1].get_file()
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+            local_path = f.name
+        await tg_file.download_to_drive(local_path)
+        bundle = await _run_blocking(_role_of(uid), _extract_ocr_bundle_from_path, local_path, uid, timeout=300)
+        ocr = bundle.get("ocr") or {}
+        ocr_ctx = {
+            "raw_markdown": str(ocr.get("raw_markdown") or ""),
+            "clean_text": str(bundle.get("clean_text") or ""),
+            "items": list(bundle.get("items") or []),
+            "model": str(ocr.get("model") or MISTRAL_OCR_MODEL),
+            "page_count": len(ocr.get("pages") or []),
+        }
+        with contextlib.suppress(Exception):
+            _remember_ocr_context(context, reply_msg.message_id, ocr_ctx)
+        return ocr_ctx
+    finally:
+        if local_path:
+            with contextlib.suppress(Exception):
+                os.remove(local_path)
+
+
+async def _generate_to_buffer_59(update, context, ocr_ctx: Dict[str, Any], uid: int, count: int, mode: str = "std") -> Tuple[int, int]:
+    count = max(1, min(500, int(count or 20)))
+    globals()["_active_gen_mode_57"] = mode or "std"
+    try:
+        items = await _run_blocking(_role_of(uid), _generate_quizzes_from_ocr_sync, ocr_ctx, count, uid, timeout=420)
+    finally:
+        globals()["_active_gen_mode_57"] = None
+    seen = set()
+    with contextlib.suppress(Exception):
+        seen.update(_gen_seen_for(context, uid, _source_hash_59(ocr_ctx, mode)))
+    with contextlib.suppress(Exception):
+        for _, it in (buffer_list(uid, limit=99999) or []):
+            seen.add(_fp_question(it))
+    added = dup = 0
+    for raw in items or []:
+        try:
+            q = str(raw.get("question") or raw.get("questions") or "").strip()
+            opts = raw.get("options") if isinstance(raw.get("options"), list) else _opts_59(raw)
+            opts = [str(o or "").strip() for o in (opts or []) if str(o or "").strip()][:5]
+            ans = int(raw.get("answer", 1) or 1)
+            if not q or len(opts) < 2 or not (1 <= ans <= len(opts)):
+                continue
+            payload = {"questions": q, "answer": ans, "explanation": str(raw.get("explanation") or "")[:200], "type": 1, "section": 1, "source": f"gen_{mode}"}
+            for i in range(5):
+                payload[f"option{i+1}"] = opts[i] if i < len(opts) else ""
+            with contextlib.suppress(Exception):
+                payload = _enforce_option_parity(payload)
+            fp = _fp_question(payload) if "_fp_question" in globals() else hashlib.md5(q.lower().encode("utf-8", "ignore")).hexdigest()
+            if fp in seen:
+                dup += 1
+                continue
+            if buffer_count(uid) >= MAX_BUFFERED_QUESTIONS:
+                break
+            if not explain_mode_on(uid):
+                payload["explanation"] = ""
+            buffer_add(uid, payload)
+            seen.add(fp)
+            added += 1
+        except Exception:
+            continue
+    with contextlib.suppress(Exception):
+        _gen_seen_for(context, uid, _source_hash_59(ocr_ctx, mode)).update(seen)
+    return added, dup
+
+
