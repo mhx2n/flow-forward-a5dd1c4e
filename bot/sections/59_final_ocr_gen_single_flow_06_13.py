@@ -425,3 +425,164 @@ async def _generate_to_buffer_59(update, context, ocr_ctx: Dict[str, Any], uid: 
     return added, dup
 
 
+async def cb_genq_59(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.data:
+        return
+    parts = q.data.split(":")
+    if len(parts) != 3 or parts[0] != "genq":
+        return
+    action, token = parts[1], parts[2]
+    store = _genq_store(context)
+    entry = store.get(token)
+    if not entry:
+        with contextlib.suppress(Exception):
+            await q.answer("Expired", show_alert=False)
+        raise ApplicationHandlerStop
+    uid = int(entry.get("uid") or 0)
+    if q.from_user and int(q.from_user.id) != uid:
+        with contextlib.suppress(Exception):
+            await q.answer("Not for you", show_alert=False)
+        raise ApplicationHandlerStop
+    chat_id = int(entry.get("chat_id") or q.message.chat_id)
+    text = str(entry.get("text") or "")
+    counts = dict(entry.get("counts") or {})
+    page_idx = int(entry.get("page") or 1)
+
+    if action == "no":
+        store.pop(token, None)
+        with contextlib.suppress(Exception):
+            await q.edit_message_text(ui_box_html("Skipped", "No extra generation started.", emoji="🚫"), parse_mode=ParseMode.HTML)
+        raise ApplicationHandlerStop
+
+    if action == "src":
+        await _show_source_actions_59(q, context, token, entry)
+        raise ApplicationHandlerStop
+
+    if action == "re":
+        src_items = _clean_source_items_59(list(entry.get("source_items") or []))
+        entry["source_items"] = src_items
+        counts = _estimate_counts_fast_59(len(src_items), text)
+        entry["counts"] = counts
+        store[token] = entry
+        body = (
+            f"📄 OCR Page Ready\n"
+            f"• Source checked MCQ: <code>{len(src_items)}</code>\n"
+            f"• Easy: <code>{counts['easy']}</code> | Medium: <code>{counts['medium']}</code> | Hard: <code>{counts['hard']}</code>\n\n"
+            "Generate new unique MCQs or use 📌 Source MCQ for original image/PDF questions."
+        )
+        with contextlib.suppress(Exception):
+            await q.edit_message_text(ui_box_html("Quiz Options", body, emoji="🧠"), parse_mode=ParseMode.HTML, reply_markup=_genq_kb_59(token, counts))
+        raise ApplicationHandlerStop
+
+    if action in ("go", "ge", "gm", "gh", "mo"):
+        if action == "ge":
+            easy, medium, hard = int(counts.get("easy", 0)), 0, 0
+        elif action == "gm":
+            easy, medium, hard = 0, int(counts.get("medium", 0)), 0
+        elif action == "gh":
+            easy, medium, hard = 0, 0, int(counts.get("hard", 0))
+        elif action == "mo":
+            easy, medium, hard = 2, 2, 1
+        else:
+            easy, medium, hard = int(counts.get("easy", 0)), int(counts.get("medium", 0)), int(counts.get("hard", 0))
+        if (easy + medium + hard) <= 0:
+            easy, medium, hard = 2, 2, 1
+        seen = set(entry.get("seen_fp") or set())
+        hint = "\n\n[Generate ONLY NEW unique MCQs. Do not repeat source questions or earlier generated questions.]" if seen else ""
+        with contextlib.suppress(Exception):
+            await q.answer("Generating…")
+            await q.edit_message_text(ui_box_html("Generating", f"Creating <code>{easy+medium+hard}</code> new MCQ(s)…", emoji="⏳"), parse_mode=ParseMode.HTML)
+        try:
+            items = await _run_blocking(_role_of(uid), _generate_mcqs_from_content, (text + hint)[:7000], easy=easy, medium=medium, hard=hard, timeout=150)
+        except Exception as e:
+            db_log("ERROR", "genq_59_generate_failed", {"user_id": uid, "error": str(e)})
+            items = []
+        added = 0
+        for raw in items or []:
+            try:
+                fp = _fp_question(raw)
+                if fp in seen:
+                    continue
+                if buffer_count(uid) >= MAX_BUFFERED_QUESTIONS:
+                    break
+                pp = dict(raw)
+                if not explain_mode_on(uid):
+                    pp["explanation"] = ""
+                buffer_add(uid, pp)
+                seen.add(fp)
+                added += 1
+            except Exception:
+                continue
+        entry["seen_fp"] = seen
+        entry["more_added"] = int(entry.get("more_added", 0) or 0) + added
+        store[token] = entry
+        body = f"Added new unique MCQ: <code>{added}</code>\nBuffered total: <code>{buffer_count(uid)}</code>"
+        with contextlib.suppress(Exception):
+            await q.edit_message_text(ui_box_html("Generated → Buffer", body, emoji="✅"), parse_mode=ParseMode.HTML, reply_markup=_genq_kb_59(token, counts))
+        if added > 0:
+            with contextlib.suppress(Exception):
+                await _send_pb_action_card(context, chat_id, uid, added)
+        raise ApplicationHandlerStop
+
+
+async def cb_src59(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.data:
+        return
+    parts = q.data.split(":")
+    if len(parts) < 3 or parts[0] != "src59":
+        return
+    action, token = parts[1], parts[-1]
+    store = _src_store_59(context)
+    entry = store.get(token)
+    if not entry:
+        with contextlib.suppress(Exception):
+            await q.answer("Expired", show_alert=False)
+        raise ApplicationHandlerStop
+    uid = int(entry.get("uid") or 0)
+    if q.from_user and int(q.from_user.id) != uid:
+        with contextlib.suppress(Exception):
+            await q.answer("Not for you", show_alert=False)
+        raise ApplicationHandlerStop
+    chat_id = int(entry.get("chat_id") or q.message.chat_id)
+    items = list(entry.get("items") or [])
+    if action == "close":
+        with contextlib.suppress(Exception):
+            await q.edit_message_reply_markup(reply_markup=None)
+        raise ApplicationHandlerStop
+    if action == "csv":
+        with contextlib.suppress(Exception):
+            await q.answer("Exporting…")
+        await _export_items_csv_59(context, chat_id, uid, items, "source_checked_mcq")
+        raise ApplicationHandlerStop
+    if action == "list":
+        try:
+            channels = channel_list_for_user(uid) or []
+        except Exception:
+            channels = []
+        rows = [[InlineKeyboardButton(f"📤 {(getattr(ch, 'title', None) or str(getattr(ch, 'channel_chat_id', '?')))[:24]}", callback_data=f"src59:post:{ch.id}:{token}")] for ch in channels[:30]]
+        rows.append([InlineKeyboardButton("✖ Close", callback_data=f"src59:close:{token}")])
+        with contextlib.suppress(Exception):
+            await q.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+        raise ApplicationHandlerStop
+    if action == "post":
+        try:
+            cid = int(parts[2])
+            ch = channel_get_by_id_for_user(uid, cid)
+        except Exception:
+            ch = None
+        if not ch:
+            with contextlib.suppress(Exception):
+                await q.answer("Channel not found", show_alert=True)
+            raise ApplicationHandlerStop
+        with contextlib.suppress(Exception):
+            await q.answer(f"Posting {len(items)}…")
+            await q.edit_message_text(ui_box_html("Posting Source MCQ", f"Posting <code>{len(items)}</code> original checked MCQ(s)…", emoji="📌"), parse_mode=ParseMode.HTML)
+        posted, failed = await _post_items_59(context, uid, chat_id, ch, items)
+        with contextlib.suppress(Exception):
+            await context.bot.send_message(chat_id=chat_id, text=ui_box_html("Source Posted", f"Posted: <code>{posted}</code>\nFailed: <code>{failed}</code>", emoji="✅"), parse_mode=ParseMode.HTML)
+        raise ApplicationHandlerStop
+
+
+
