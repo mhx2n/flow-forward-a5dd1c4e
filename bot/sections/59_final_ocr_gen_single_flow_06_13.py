@@ -667,5 +667,125 @@ async def _run_staff_ocr_pipeline(update: Update, context: ContextTypes.DEFAULT_
         return {"raw_markdown": "", "clean_text": "", "items": [], "source_label": source_label}
 
 
+def _g59_mode_kb(tok: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🩺 Medical", callback_data=f"g59:mode:med:{tok}"), InlineKeyboardButton("🛠 Engineering", callback_data=f"g59:mode:eng:{tok}")],
+        [InlineKeyboardButton("🎓 University", callback_data=f"g59:mode:ver:{tok}"), InlineKeyboardButton("📘 Standard", callback_data=f"g59:mode:std:{tok}")],
+        [InlineKeyboardButton("✖ Cancel", callback_data=f"g59:x:x:{tok}")],
+    ])
+
+
+def _g59_count_kb(tok: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("5", callback_data=f"g59:cnt:5:{tok}"), InlineKeyboardButton("10", callback_data=f"g59:cnt:10:{tok}"), InlineKeyboardButton("20", callback_data=f"g59:cnt:20:{tok}")],
+        [InlineKeyboardButton("50", callback_data=f"g59:cnt:50:{tok}"), InlineKeyboardButton("100", callback_data=f"g59:cnt:100:{tok}"), InlineKeyboardButton("500", callback_data=f"g59:cnt:500:{tok}")],
+        [InlineKeyboardButton("✖ Cancel", callback_data=f"g59:x:x:{tok}")],
+    ])
+
+
+async def cmd_gen(update: Update, context: ContextTypes.DEFAULT_TYPE):  # noqa: F811
+    ensure_user(update)
+    if not update.message or not update.effective_user:
+        raise ApplicationHandlerStop
+    uid = int(update.effective_user.id)
+    if is_banned(uid):
+        raise ApplicationHandlerStop
+    is_staff = False
+    with contextlib.suppress(Exception):
+        is_staff = bool(is_owner(uid) or is_admin(uid))
+    if not is_staff:
+        # Users keep the existing limited flow.
+        if "_prev_cmd_gen_56" in globals():
+            await _prev_cmd_gen_56(update, context)
+        raise ApplicationHandlerStop
+
+    reply_msg = update.message.reply_to_message
+    if not reply_msg:
+        await safe_reply(update, usage_box("gen", "[med|eng|engg|ver|std] [count]", "Reply to an OCR image/PDF/result, then run .gen or .gen med 20."))
+        raise ApplicationHandlerStop
+    mode, count, cleaned = _mode_count_59(update.message.text or "", list(context.args or []))
+    ocr_ctx = await _resolve_ocr_ctx_59(update, context, reply_msg, uid)
+    if not ocr_ctx:
+        await warn(update, "No OCR Context", "Reply to an OCR-scanned image/PDF/result first.")
+        raise ApplicationHandlerStop
+
+    if count is None:
+        tok = uuid.uuid4().hex[:10]
+        _g59_store(context)[tok] = {"uid": uid, "chat_id": update.message.chat_id, "mode": mode or "", "ocr_ctx": ocr_ctx, "ts": time.time()}
+        if not mode:
+            await context.bot.send_message(
+                chat_id=update.message.chat_id,
+                text=ui_box_html("Generation Mode", "কোন standard এ new unique MCQ বানাবে?", emoji="🧠"),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_g59_mode_kb(tok),
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=update.message.chat_id,
+                text=ui_box_html("How many MCQs?", f"Mode: <b>{h(mode.upper())}</b>", emoji="🔢"),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_g59_count_kb(tok),
+            )
+        raise ApplicationHandlerStop
+
+    status = None
+    with contextlib.suppress(Exception):
+        status = await update.message.reply_text(ui_box_html("Generating", f"Mode: <b>{h((mode or 'std').upper())}</b>\nCount: <code>{count}</code>", emoji="⏳"), parse_mode=ParseMode.HTML)
+    added, dup = await _generate_to_buffer_59(update, context, ocr_ctx, uid, count, mode or "std")
+    with contextlib.suppress(Exception):
+        if status:
+            await status.edit_text(ui_box_html("Generated → Buffer", f"Added: <code>{added}</code>\nDuplicates skipped: <code>{dup}</code>\nBuffered total: <code>{buffer_count(uid)}</code>", emoji="✅"), parse_mode=ParseMode.HTML)
+    if added > 0:
+        await _send_pb_action_card(context, update.message.chat_id, uid, added)
+    raise ApplicationHandlerStop
+
+
+async def cb_g59(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.data:
+        return
+    parts = q.data.split(":")
+    if len(parts) != 4 or parts[0] != "g59":
+        return
+    action, val, tok = parts[1], parts[2], parts[3]
+    entry = _g59_store(context).get(tok)
+    if not entry:
+        with contextlib.suppress(Exception):
+            await q.answer("Expired", show_alert=False)
+        raise ApplicationHandlerStop
+    uid = int(entry.get("uid") or 0)
+    if q.from_user and int(q.from_user.id) != uid:
+        with contextlib.suppress(Exception):
+            await q.answer("Not for you", show_alert=False)
+        raise ApplicationHandlerStop
+    if action == "x":
+        _g59_store(context).pop(tok, None)
+        with contextlib.suppress(Exception):
+            await q.edit_message_text(ui_box_html("Cancelled", "Generation cancelled.", emoji="✖"), parse_mode=ParseMode.HTML)
+        raise ApplicationHandlerStop
+    if action == "mode":
+        entry["mode"] = val
+        _g59_store(context)[tok] = entry
+        with contextlib.suppress(Exception):
+            await q.edit_message_text(ui_box_html("How many MCQs?", f"Mode: <b>{h(val.upper())}</b>", emoji="🔢"), parse_mode=ParseMode.HTML, reply_markup=_g59_count_kb(tok))
+        raise ApplicationHandlerStop
+    if action == "cnt":
+        count = max(1, min(500, int(val)))
+        mode = str(entry.get("mode") or "std")
+        ocr_ctx = dict(entry.get("ocr_ctx") or {})
+        chat_id = int(entry.get("chat_id") or q.message.chat_id)
+        with contextlib.suppress(Exception):
+            await q.answer(f"Generating {count}…")
+            await q.edit_message_text(ui_box_html("Generating", f"Mode: <b>{h(mode.upper())}</b>\nCount: <code>{count}</code>", emoji="⏳"), parse_mode=ParseMode.HTML)
+        added, dup = await _generate_to_buffer_59(update, context, ocr_ctx, uid, count, mode)
+        _g59_store(context).pop(tok, None)
+        with contextlib.suppress(Exception):
+            await q.edit_message_text(ui_box_html("Generated → Buffer", f"Added: <code>{added}</code>\nDuplicates skipped: <code>{dup}</code>\nBuffered total: <code>{buffer_count(uid)}</code>", emoji="✅"), parse_mode=ParseMode.HTML)
+        if added > 0:
+            await _send_pb_action_card(context, chat_id, uid, added)
+        raise ApplicationHandlerStop
+
+
+
 
 
