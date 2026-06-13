@@ -585,4 +585,87 @@ async def cb_src59(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raise ApplicationHandlerStop
 
 
+_prev_send_pb_action_card_59 = _send_pb_action_card if "_send_pb_action_card" in globals() else None
+
+
+async def _send_pb_action_card(context, chat_id: int, uid: int, added: int):  # noqa: F811
+    # Multiple older patches call this after the same OCR/generation event. Debounce
+    # so the chat receives one action card, not 3–5 duplicates.
+    try:
+        bd = context.application.bot_data
+        seen = bd.setdefault("_pb_card_debounce_59", {})
+        total = int(buffer_count(uid)) if "buffer_count" in globals() else 0
+        key = f"{uid}:{chat_id}:{int(added)}:{total}"
+        now = time.time()
+        for k, ts in list(seen.items()):
+            if now - float(ts or 0) > 8:
+                seen.pop(k, None)
+        if key in seen:
+            return
+        seen[key] = now
+    except Exception:
+        pass
+    if _prev_send_pb_action_card_59:
+        return await _prev_send_pb_action_card_59(context, chat_id, uid, added)
+
+
+async def _run_staff_ocr_pipeline(update: Update, context: ContextTypes.DEFAULT_TYPE, source_msg, local_path: str, *, source_label: str = "image") -> Dict[str, Any]:  # noqa: F811
+    uid = int(update.effective_user.id if update and update.effective_user else 0)
+    proc = None
+    try:
+        proc = await _processing_start(source_msg, "OCR Checking", f"Reading {source_label}…")
+        ocr = await _run_blocking(_role_of(uid), _mistral_ocr_process_path, local_path, timeout=220)
+        pages = list(ocr.get("pages") or [])
+        raw_markdown = str(ocr.get("raw_markdown") or "").strip()
+        if not raw_markdown and not pages:
+            raise RuntimeError("OCR could not read usable text.")
+        await _processing_update(proc, "OCR Checking", "Extracting MCQs and checking answers…")
+        clean_text, raw_items = await _run_blocking(_role_of(uid), _ocr_pages_to_clean_text_and_items, pages, uid, timeout=220)
+        source_items = await _run_blocking(_role_of(uid), _clean_source_items_59, list(raw_items or []), timeout=90)
+        ctx_payload = {
+            "raw_markdown": raw_markdown,
+            "clean_text": clean_text,
+            "items": source_items,
+            "model": str(ocr.get("model") or MISTRAL_OCR_MODEL),
+            "page_count": len(pages) or 1,
+            "source_label": source_label,
+        }
+        with contextlib.suppress(Exception):
+            _remember_ocr_context(context, source_msg.message_id, ctx_payload)
+        await _processing_delete(proc)
+        proc = None
+        counts = _estimate_counts_fast_59(len(source_items), clean_text)
+        token = uuid.uuid4().hex[:10]
+        seen_fp = set()
+        for it in source_items:
+            with contextlib.suppress(Exception):
+                seen_fp.add(_fp_question(it))
+        _genq_store(context)[token] = {
+            "uid": uid, "chat_id": int(source_msg.chat_id), "page": 1,
+            "text": str(clean_text or raw_markdown or ""), "counts": counts,
+            "source_items": source_items, "seen_fp": seen_fp, "more_added": 0,
+            "ts": time.time(),
+        }
+        body = (
+            f"📄 OCR checked MCQ: <code>{len(source_items)}</code>\n"
+            f"• Easy: <code>{counts['easy']}</code>  Medium: <code>{counts['medium']}</code>  Hard: <code>{counts['hard']}</code>\n\n"
+            "✅ Source প্রশ্নগুলো answer-check করা হয়েছে. Generate করলে new unique MCQ buffer-এ যাবে."
+        )
+        await context.bot.send_message(
+            chat_id=source_msg.chat_id,
+            text=ui_box_html("Quiz Ready", body, emoji="🧠"),
+            parse_mode=ParseMode.HTML,
+            reply_markup=_genq_kb_59(token, counts),
+            disable_web_page_preview=True,
+        )
+        return ctx_payload
+    except Exception as e:
+        await _processing_delete(proc)
+        db_log("ERROR", "ocr_pipeline_59_failed", {"user_id": uid, "error": str(e)})
+        with contextlib.suppress(Exception):
+            await source_msg.reply_text(ui_box_html("OCR Failed", h(str(e)[:220]), emoji="⚠️"), parse_mode=ParseMode.HTML)
+        return {"raw_markdown": "", "clean_text": "", "items": [], "source_label": source_label}
+
+
+
 
