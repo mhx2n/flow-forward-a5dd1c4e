@@ -50,6 +50,48 @@ pip install -r bot/requirements.txt
 python -m bot
 ```
 
+## Deploy to Render (Free Web Service)
+
+The repo root has `main.py`, `requirements.txt`, `Procfile`, `runtime.txt`
+and `render.yaml` ready to go.
+
+1. Push to GitHub (already done via Lovable's GitHub integration).
+2. On Render → **New + → Blueprint** → pick this repo → **Apply**.
+   (Or **New + → Web Service**, runtime `Python`, build
+   `pip install -r requirements.txt`, start `python main.py`.)
+3. In the service's **Environment** tab set:
+   - `BOT_TOKEN` — your Telegram bot token
+   - `OWNER_ID`  — your numeric Telegram id
+   - `MONGO_URI` — `mongodb+srv://…` (only if you want PATCH-R backup)
+   - any AI keys you use: `GEMINI_API_KEY`, `MISTRAL_API_KEY`,
+     `ELEVENLABS_API_KEY`
+4. Render assigns a public URL like `https://probaho-bot.onrender.com`.
+   - **`/`** — clickable browser health page (uptime, MongoDB, version)
+   - **`/healthz`** · **`/ping`** · **`/readyz`** — tiny `OK` for monitors
+   - **`/status.json`** — JSON for programmatic checks
+
+### Free-tier bandwidth (≈ 5 GB friendly)
+
+- HTML health page is ~3 KB, JSON ~70 B, probe ~2 B. Pinging
+  `/healthz` every 5 min for a whole month uses ≈ 18 KB — negligible.
+- Long-polling traffic with Telegram is the dominant cost; this is
+  unchanged from your original single-file bot.
+
+### Keeping the service awake
+
+Render Free spins the service down after 15 min of HTTP inactivity.
+Point a free uptime monitor (UptimeRobot, BetterStack, cron-job.org) at
+`https://<your-service>.onrender.com/healthz` every 5 min to keep the
+bot polling Telegram around the clock.
+
+### MongoDB
+
+PATCH-R is already wired in (`bot/sections/46_probaho_patch_r_*`). Set
+`MONGO_URI` (and optional `MONGO_DB_NAME`, default `probaho_bot`) in
+Render's environment and the bot will resume weekly Sunday 03:00 UTC
+backup syncs exactly like before. Without `MONGO_URI` Mongo backup is
+inert — every other feature still works.
+
 ## Why this layout instead of `handlers/`, `services/`, `db/`?
 
 The original script defines the same function name up to 4–5 times across
