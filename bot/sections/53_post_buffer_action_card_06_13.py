@@ -231,9 +231,10 @@ async def cb_pba(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     failed += 1
                     continue
                 qtext = str(it.get("questions") or "").strip()
-                # প্রবাহ tag prefix
-                if not qtext.startswith("প্রবাহ"):
-                    qtext = f"প্রবাহ\n{qtext}"
+                # Channel-specific prefix only when set; no forced "প্রবাহ"
+                ch_prefix = (getattr(ch, "prefix", "") or "").strip()
+                if ch_prefix and not qtext.startswith(ch_prefix):
+                    qtext = f"{ch_prefix}\n{qtext}"
                 expl = ""
                 if explain_mode_on(uid):
                     expl = _trim_expl_for_poll(str(it.get("explanation") or ""))
