@@ -287,7 +287,8 @@ async def _send_done_export_62(context, chat_id: int, uid: int) -> int:
         json_path = jf.name
     try:
         df[cols].to_csv(csv_path, index=False, encoding="utf-8-sig")
-        _json62.dump(_quiz_json_62(rows, explanations_enabled), open(json_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        with open(json_path, "w", encoding="utf-8") as jf:
+            _json62.dump(_quiz_json_62(rows, explanations_enabled), jf, ensure_ascii=False, indent=2)
         with open(csv_path, "rb") as rf:
             await context.bot.send_document(
                 chat_id=chat_id,
